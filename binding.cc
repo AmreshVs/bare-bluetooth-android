@@ -878,8 +878,6 @@ bare_bluetooth_android_l2cap_init(
     bare_bluetooth_android_channels.emplace(channel->id, channel);
   }
 
-  delete socket_handle;
-
   auto jenv = bare_bluetooth_android_jvm().get_env().value();
   auto socket = j_bluetooth_socket_t(jenv, channel->socket);
   auto get_device = socket.get_class().get_method<j_bluetooth_device_t()>("getRemoteDevice");
