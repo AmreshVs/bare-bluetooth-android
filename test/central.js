@@ -1,5 +1,6 @@
 const test = require('brittle')
 const Central = require('../lib/central')
+const binding = require('../binding')
 const { isCI } = require('./helpers')
 
 test('central emits stateChange on init', { skip: isCI }, async (t) => {
@@ -26,6 +27,56 @@ test('central tracks state property', { skip: isCI }, async (t) => {
 
   t.is(central.state, state, 'state property matches emitted state')
 })
+
+test('connect for an abandoned dial closes the connection', { skip: isCI }, (t) => {
+  const central = new Central()
+  const closed = stubDisconnect(t)
+  t.teardown(() => central.destroy())
+
+  central.on('connect', () => t.fail('connect emitted for an abandoned dial'))
+
+  const gattHandle = {}
+  central._onconnect(gattHandle, '00:11:22:33:44:55')
+
+  t.alike(closed, [gattHandle])
+})
+
+test('connect for a pending dial attaches and emits', { skip: isCI }, (t) => {
+  const central = new Central()
+  const closed = stubDisconnect(t)
+  t.teardown(() => central.destroy())
+
+  const peripheral = {
+    id: '00:11:22:33:44:55',
+    _attach(handle) {
+      this.gattHandle = handle
+    },
+    destroy() {}
+  }
+  central._connected.set(peripheral.id, peripheral)
+
+  let connected = null
+  central.on('connect', (p) => {
+    connected = p
+  })
+
+  const gattHandle = {}
+  central._onconnect(gattHandle, peripheral.id)
+
+  t.is(connected, peripheral)
+  t.is(peripheral.gattHandle, gattHandle)
+  t.is(closed.length, 0)
+})
+
+function stubDisconnect(t) {
+  const closed = []
+  const original = binding.centralDisconnect
+  binding.centralDisconnect = (handle, gattHandle) => closed.push(gattHandle)
+  t.teardown(() => {
+    binding.centralDisconnect = original
+  })
+  return closed
+}
 
 test('central exports state constants', (t) => {
   t.is(Central.STATE_OFF, 10)
