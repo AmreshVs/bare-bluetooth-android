@@ -338,7 +338,17 @@ typedef struct {
 
 typedef struct {
   std::string address;
+  // Global refs taken on the binder thread, deleted by the JS thread.
+  jobject gatt;
+  jobject callback;
 } bare_bluetooth_android_central_connect_t;
+
+static void
+bare_bluetooth_android_central_connect_delete(JNIEnv *env, bare_bluetooth_android_central_connect_t *event) {
+  env->DeleteGlobalRef(event->gatt);
+  env->DeleteGlobalRef(event->callback);
+  delete event;
+}
 
 typedef struct {
   std::string address;
@@ -1163,8 +1173,10 @@ bare_bluetooth_android_central__on_connect(
 
   bare_bluetooth_android_central_ref_t ref{central};
 
+  auto jenv = bare_bluetooth_android_jvm().get_env().value();
+
   if (central->exiting) {
-    delete event;
+    bare_bluetooth_android_central_connect_delete(jenv, event);
     return;
   }
 
@@ -1176,16 +1188,11 @@ bare_bluetooth_android_central__on_connect(
   err = js_get_reference_value(env, central->ctx, &receiver);
   assert(err == 0);
 
-  auto jenv = bare_bluetooth_android_jvm().get_env().value();
-  auto callback = j_hp_gatt_callback_t(jenv, central->gatt_callback_ref);
-  auto take_connected_gatt = callback.get_class().get_method<j_bluetooth_gatt_t(std::string)>("takeConnectedGatt");
-  auto gatt = take_connected_gatt(callback, event->address);
-
-  assert(static_cast<jobject>(gatt) != nullptr);
-
+  // The connection's own gatt and callback: central->gatt_callback_ref is the
+  // latest dial's, so it is the wrong one whenever dials overlap.
   auto *gatt_handle = new bare_bluetooth_android_gatt_handle_t{
-    java_global_ref_t<j_bluetooth_gatt_t>(jenv, gatt),
-    java_global_ref_t<j_hp_gatt_callback_t>(jenv, callback)
+    java_global_ref_t<j_bluetooth_gatt_t>(jenv, event->gatt),
+    java_global_ref_t<j_hp_gatt_callback_t>(jenv, event->callback)
   };
 
   js_external_t<bare_bluetooth_android_gatt_handle_t> ext;
@@ -1197,7 +1204,7 @@ bare_bluetooth_android_central__on_connect(
   err = js_call_function(env, callback_fn, js_receiver_t(receiver), js_handle_t(static_cast<js_value_t *>(ext)), event->address);
   assert(err == 0);
 
-  delete event;
+  bare_bluetooth_android_central_connect_delete(jenv, event);
 
   err = js_close_handle_scope(env, scope);
   assert(err == 0);
@@ -1685,6 +1692,7 @@ bare_bluetooth_android_on_connection_state_change(
   java_env_t env,
   j_hp_gatt_callback_t self,
   long native_ptr,
+  j_hp_gatt_callback_t callback,
   j_bluetooth_gatt_t gatt,
   int status,
   int new_state
@@ -1703,6 +1711,8 @@ bare_bluetooth_android_on_connection_state_change(
 
     auto *event = new bare_bluetooth_android_central_connect_t();
     event->address = address;
+    event->gatt = static_cast<JNIEnv *>(env)->NewGlobalRef(static_cast<jobject>(gatt));
+    event->callback = static_cast<JNIEnv *>(env)->NewGlobalRef(static_cast<jobject>(callback));
 
     central->refs++;
     js_call_threadsafe_function(central->tsfn_connect, event);

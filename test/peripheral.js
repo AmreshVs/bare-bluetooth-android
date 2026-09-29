@@ -106,6 +106,73 @@ test('connect and discover services', { skip: isCI }, async (t) => {
   }
 })
 
+test('overlapping dials each get their own connection', { skip: isCI }, async (t) => {
+  const central = new Central()
+  t.teardown(() => central.destroy())
+
+  const state = await new Promise((resolve) => {
+    central.on('stateChange', resolve)
+  })
+
+  if (state !== 'on') {
+    t.comment('bluetooth not on: ' + state + ', skipping')
+    return
+  }
+
+  const found = new Map()
+
+  central.startScan()
+
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 10000)
+    central.on('discover', (discovered) => {
+      found.set(discovered.id, discovered)
+      if (found.size < 2) return
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+
+  central.stopScan()
+
+  if (found.size < 2) {
+    t.comment('fewer than two peripherals advertising, skipping')
+    return
+  }
+
+  const connected = new Map()
+  central.on('error', () => {})
+
+  const done = new Promise((resolve) => {
+    const timer = setTimeout(resolve, 15000)
+    central.on('connect', (peripheral) => {
+      connected.set(peripheral.id, peripheral)
+      if (connected.size < 2) return
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+
+  // Both dials start before either connects, so their connections overlap.
+  for (const discovered of found.values()) central.connect(discovered)
+
+  await done
+
+  t.teardown(() => {
+    for (const peripheral of connected.values()) peripheral.destroy()
+  })
+
+  if (connected.size < 2) {
+    t.comment('could not connect to both nearby peripherals, skipping')
+    return
+  }
+
+  for (const [id, peripheral] of connected) {
+    t.ok(found.has(id), 'connect reports a dialed peripheral')
+    t.ok(peripheral instanceof Peripheral, 'connect emits a Peripheral instance')
+  }
+})
+
 test('peripheral property constants', (t) => {
   t.is(Peripheral.PROPERTY_READ, 0x02)
   t.is(Peripheral.PROPERTY_WRITE_WITHOUT_RESPONSE, 0x04)
